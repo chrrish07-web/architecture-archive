@@ -22,13 +22,13 @@ function openDB(){return new Promise((resolve,reject)=>{
   req.onupgradeneeded=()=>req.result.createObjectStore('references',{keyPath:'id'});
   req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error);
 })}
-function access(write,value){return new Promise((resolve,reject)=>{
-  const tx=db.transaction('references',write?'readwrite':'readonly');
-  const store=tx.objectStore('references'),req=write?store.put(value):store.getAll();
+function access(operation,value){return new Promise((resolve,reject)=>{
+  const tx=db.transaction('references',operation==='getAll'?'readonly':'readwrite');
+  const store=tx.objectStore('references'),req=operation==='getAll'?store.getAll():store[operation](value);
   tx.oncomplete=()=>resolve(req.result);tx.onabort=()=>reject(tx.error||req.error);
 })}
 async function refresh(){
-  db ||= await openDB();records=(await access(false)).sort((a,b)=>b.createdAt-a.createdAt);
+  db ||= await openDB();records=(await access('getAll')).sort((a,b)=>b.createdAt-a.createdAt);
 }
 async function start(){
   try{await refresh();$('#failure').replaceChildren();home()}
@@ -76,11 +76,26 @@ function showDetail(r){
   const tags=el('div',null,'tags');projects().filter(p=>p!==unspecified).forEach(p=>tags.append(button(p,()=>proj.value=p)));
   panel.append(el('h2',r.title),el('p','출처 · '+r.source),first,second,tags,err);
   if(http(r.url)){const link=el('a','원본 링크 열기 ↗');link.href=r.url;link.target='_blank';link.rel='noopener noreferrer';panel.append(link)}
+  const remove = button('레퍼런스 삭제', async () => {
+    if (!window.confirm('「' + r.title + '」 레퍼런스를 삭제할까요? 삭제하면 복구할 수 없습니다.')) return;
+    remove.disabled = save.disabled = true;
+    try {
+      await access('delete', r.id);
+      records = records.filter(item => item.id !== r.id);
+      home();
+      notify('레퍼런스를 삭제했습니다.');
+    } catch {
+      err.textContent = '삭제하지 못했습니다. 다시 시도해 주세요.';
+    } finally {
+      remove.disabled = save.disabled = false;
+    }
+  }, 'err');
+  panel.append(remove);
   layout.append(left,panel);page.append(bar,layout);
   async function submit(){
     if(proj.value.trim().length>40){err.textContent='프로젝트명은 최대 40자까지 입력할 수 있습니다.';proj.focus();return}
     save.disabled=true;
-    try{const updated={...r,category:cat.value,project:proj.value.trim()||unspecified};await access(true,updated);records=records.map(item=>item.id===r.id?updated:item);home();notify('변경사항이 저장되었습니다.')}
+    try{const updated={...r,category:cat.value,project:proj.value.trim()||unspecified};await access('put',updated);records=records.map(item=>item.id===r.id?updated:item);home();notify('변경사항이 저장되었습니다.')}
     catch{err.textContent='변경사항을 저장하지 못했습니다. 다시 시도해 주세요.'}finally{save.disabled=false}
   }
 }
@@ -112,7 +127,7 @@ $('form').onsubmit=async e=>{
   $('#error').textContent=errors.join(' ');if(errors.length)return;
   $('#save').disabled=true;
   try{db ||= await openDB();const record={id:crypto.randomUUID(),sourceType:mode,title,source,category:'미분류',project:unspecified,createdAt:Date.now(),...(mode==='image'?{imageBlob:file}:{url})};
-    await access(true,record);records.unshift(record);dialog.close();clearFilters();notify('레퍼런스가 저장되었습니다.')
+    await access('put',record);records.unshift(record);dialog.close();clearFilters();notify('레퍼런스가 저장되었습니다.')
   }catch(err){$('#error').textContent=err.name==='QuotaExceededError'?'저장 공간이 부족합니다. 불필요한 자료를 정리해 주세요.':'저장에 실패했습니다. 다시 시도해 주세요.'}
   finally{$('#save').disabled=false}
 };
