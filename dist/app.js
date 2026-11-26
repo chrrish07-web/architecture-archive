@@ -44,12 +44,78 @@ function home(){
     const b=button(c,()=>{category=c;home()},c===category?'selected':'');b.setAttribute('aria-pressed',c===category);return b;
   }));drawCards()
 }
+const sourceSites = {
+  Pinterest: ['pinterest.com', 'pinterest.co.kr', 'pin.it', 'pinimg.com'],
+  Instagram: ['instagram.com'], ArchDaily: ['archdaily.com'],
+  Dezeen: ['dezeen.com'], Behance: ['behance.net']
+};
+function inferredSource(value) {
+  if (!http(value)) return '';
+  const host = new URL(value).hostname.replace(/^www\./, '');
+  return Object.keys(sourceSites).find(name => sourceSites[name].some(domain =>
+    host === domain || host.endsWith('.' + domain))) || host.slice(0, 200);
+}
+function previewAddress(value) {
+  if (!http(value)) return '';
+  const url = new URL(value);
+  if (url.username || url.password) return '';
+  if (/\.(png|webp|jpe?g|gif|avif)$/i.test(url.pathname)) return url.href;
+  if (!url.hostname.includes('.') || /(?:\.local|\.localhost|\.internal|\d\.\d+)$/.test(url.hostname)) return '';
+  url.hash = '';
+  return 'https://api.microlink.io/?' + new URLSearchParams({ url: url.href, embed: 'image.url' });
+}
+let manualSource = false, previewTimer, previewVersion = 0;
+function syncSource() {
+  const input = $('#source');
+  if (!manualSource) input.value = mode === 'url' ? inferredSource($('#url').value.trim()) : '';
+  for (const choice of $('#sourceChoices').children) {
+    const active = choice.textContent === input.value.trim();
+    choice.classList.toggle('selected', active);
+    choice.setAttribute('aria-pressed', String(active));
+  }
+}
+for (const name of [...Object.keys(sourceSites), '직접 촬영']) {
+  $('#sourceChoices').append(button(name, () => {
+    manualSource = true;
+    $('#source').value = name;
+    syncSource();
+  }));
+}
+$('#source').oninput = () => { manualSource = true; syncSource(); };
+function updatePreview() {
+  clearTimeout(previewTimer);
+  const version = ++previewVersion;
+  const box = $('#linkPreview'), status = box.querySelector('span');
+  const old = box.querySelector('img');
+  old.hidden = true;
+  const value = $('#url').value.trim();
+  box.hidden = mode !== 'url' || !http(value);
+  $('#linkNote').hidden = mode !== 'url';
+  if (box.hidden) return;
+  const address = previewAddress(value);
+  const unavailable = '대표 이미지를 불러올 수 없어요. 링크는 저장할 수 있어요.';
+  status.textContent = address ? '미리보기 이미지를 불러오는 중…' : unavailable;
+  if (!address) return;
+  previewTimer = setTimeout(() => {
+    const img = new Image();
+    img.alt = '링크 미리보기'; img.referrerPolicy = 'no-referrer';
+    img.onload = () => {
+      if (version !== previewVersion) return;
+      old.replaceWith(img);
+      status.textContent = '';
+    };
+    img.onerror = () => { if (version === previewVersion) status.textContent = unavailable; };
+    img.src = address;
+  }, 350);
+}
+$('#url').oninput = () => { syncSource(); updatePreview(); };
+dialog.addEventListener('close', () => { clearTimeout(previewTimer); ++previewVersion; });
 function media(parent,r,detail=false){
   parent.append(el('span','미리보기 없음'));
-  if(!r.imageBlob && !(http(r.url)&&/\.(png|webp|jpe?g)([?#]|$)/i.test(r.url)))return;
+  if(!r.imageBlob && !r.previewAddress && !(http(r.url)&&/\.(png|webp|jpe?g)([?#]|$)/i.test(r.url)))return;
   const img=el('img');img.alt=r.title;img.loading=detail?'eager':'lazy';img.referrerPolicy='no-referrer';
   img.onerror=()=>img.remove();
-  if(r.imageBlob){const url=URL.createObjectURL(r.imageBlob);if(detail)detailUrl=url;else cardUrls.push(url);img.src=url}else img.src=r.url;
+  if(r.imageBlob){const url=URL.createObjectURL(r.imageBlob);if(detail)detailUrl=url;else cardUrls.push(url);img.src=url}else img.src=r.previewAddress || r.url;
   parent.append(img)
 }
 function drawCards(){
@@ -100,7 +166,7 @@ function showDetail(r){
   }
 }
 function setMode(next){
-  mode=next;$('#drop').hidden=next!=='image';$('#urlField').hidden=next!=='url';$('#error').textContent='';
+  mode=next;syncSource();updatePreview();$('#drop').hidden=next!=='image';$('#urlField').hidden=next!=='url';$('#error').textContent='';
   for(const [selector,type] of [['#imageTab','image'],['#urlTab','url']]){$(selector).classList.toggle('selected',next===type);$(selector).setAttribute('aria-pressed',next===type)}
 }
 function choose(f){
@@ -110,7 +176,7 @@ function choose(f){
   if(f.size>10*1024*1024){$('#error').textContent='파일 크기는 10MB 이하로 제한됩니다.';return}
   file=f;previewUrl=URL.createObjectURL(f);$('#preview').src=previewUrl;$('#preview').hidden=false;$('#fileLabel').textContent=f.name
 }
-document.querySelectorAll('.add').forEach(b=>b.onclick=()=>{$('form').reset();choose(null);setMode('image');$('#counter').textContent='0/80';dialog.showModal()});
+document.querySelectorAll('.add').forEach(b=>b.onclick=()=>{$('form').reset();manualSource=false;choose(null);setMode('image');$('#counter').textContent='0/80';dialog.showModal()});
 document.querySelectorAll('.close').forEach(b=>b.onclick=()=>dialog.close());
 $('#imageTab').onclick=()=>setMode('image');$('#urlTab').onclick=()=>setMode('url');
 $('#titleInput').oninput=e=>$('#counter').textContent=e.target.value.length+'/80';
@@ -118,7 +184,7 @@ $('#file').onchange=e=>choose(e.target.files[0]);
 $('#drop').ondragover=e=>{e.preventDefault();$('#drop').classList.add('drag')};$('#drop').ondragleave=()=>$('#drop').classList.remove('drag');
 $('#drop').ondrop=e=>{e.preventDefault();$('#drop').classList.remove('drag');choose(e.dataTransfer.files[0])};
 $('form').onsubmit=async e=>{
-  e.preventDefault();const title=$('#titleInput').value.trim(),source=$('#source').value.trim(),url=$('#url').value.trim(),errors=[];
+  e.preventDefault();const title=$('#titleInput').value.trim(),source=$('#source').value.trim() || (mode==='url' ? inferredSource($('#url').value.trim()) : ''),url=$('#url').value.trim(),errors=[];
   if(mode==='image'&&!file)errors.push('이미지 파일을 선택해 주세요.');
   if(mode==='url'&&!http(url))errors.push('올바른 URL을 입력해 주세요.');
   if(!title)errors.push('레퍼런스 제목을 입력해 주세요.');
@@ -126,7 +192,7 @@ $('form').onsubmit=async e=>{
   if(title.length>80||source.length>200||(mode==='url'&&url.length>2048))errors.push('입력 가능한 글자 수를 초과했습니다.');
   $('#error').textContent=errors.join(' ');if(errors.length)return;
   $('#save').disabled=true;
-  try{db ||= await openDB();const record={id:crypto.randomUUID(),sourceType:mode,title,source,category:'미분류',project:unspecified,createdAt:Date.now(),...(mode==='image'?{imageBlob:file}:{url})};
+  try{db ||= await openDB();const record={id:crypto.randomUUID(),sourceType:mode,title,source,category:'미분류',project:unspecified,createdAt:Date.now(),...(mode==='image'?{imageBlob:file}:{url,previewAddress:previewAddress(url)})};
     await access('put',record);records.unshift(record);dialog.close();clearFilters();notify('레퍼런스가 저장되었습니다.')
   }catch(err){$('#error').textContent=err.name==='QuotaExceededError'?'저장 공간이 부족합니다. 불필요한 자료를 정리해 주세요.':'저장에 실패했습니다. 다시 시도해 주세요.'}
   finally{$('#save').disabled=false}
